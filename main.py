@@ -124,7 +124,18 @@ class AudioStreamerApp(ctk.CTk):
 
         # Password
         self.pass_entry = ctk.CTkEntry(self.content_frame, placeholder_text="Password", show="*")
-        self.pass_entry.pack(pady=(0, 20), padx=(30, 15), fill="x")
+        self.pass_entry.pack(pady=(0, 10), padx=(30, 15), fill="x")
+
+        # Bitrate
+        self.bitrate_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        self.bitrate_frame.pack(pady=(0, 20), padx=(30, 15), fill="x")
+
+        self.bitrate_label = ctk.CTkLabel(self.bitrate_frame, text="Bitrate (kbps):", text_color="gray")
+        self.bitrate_label.pack(side="left")
+
+        self.bitrate_var = ctk.StringVar(value=str(BITRATE))
+        self.bitrate_menu = ctk.CTkOptionMenu(self.bitrate_frame, width=100, values=["128", "192", "256", "320"], variable=self.bitrate_var)
+        self.bitrate_menu.pack(side="right")
 
         # Controles inferiores
         self.controls_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
@@ -222,6 +233,7 @@ class AudioStreamerApp(ctk.CTk):
                 "sid": self.sid_entry.get().strip(),
                 "user": self.dj_user_entry.get().strip(),
                 "pass": self.pass_entry.get().strip(),
+                "bitrate": self.bitrate_var.get(),
             }
             self.save_presets_to_file()
             self.update_preset_menu()
@@ -243,6 +255,7 @@ class AudioStreamerApp(ctk.CTk):
             self.sid_entry.delete(0, 'end'); self.sid_entry.insert(0, p.get("sid", ""))
             self.dj_user_entry.delete(0, 'end'); self.dj_user_entry.insert(0, p.get("user", ""))
             self.pass_entry.delete(0, 'end'); self.pass_entry.insert(0, p.get("pass", ""))
+            self.bitrate_var.set(p.get("bitrate", str(BITRATE)))
         elif choice == "Limpiar Datos":
             self.host_entry.delete(0, 'end')
             self.port_entry.delete(0, 'end')
@@ -279,6 +292,7 @@ class AudioStreamerApp(ctk.CTk):
     def reset_btn(self):
         self.is_connected = False
         self.set_btn("Iniciar Broadcast")
+        self.bitrate_menu.configure(state="normal")
         if self.status_label.cget("text") == "En Vivo" or self.status_label.cget("text") == "Conectando...":
             self.update_status("Desconectado", "gray")
         self.update_vu(0, 0)
@@ -310,10 +324,13 @@ class AudioStreamerApp(ctk.CTk):
                 self.after(0, self.reset_btn)
                 return
 
+            bitrate = int(self.bitrate_var.get())
+            self.after(0, lambda: self.bitrate_menu.configure(state="disabled"))
+
             # Protocolo SHOUTcast 2 (Ultravox 2.1): se conecta al puerto base
             # y permite elegir el Stream ID real del servidor.
             self.source = UvoxSource(hostname, port, sid, dj_user, dj_pass,
-                                     bitrate=BITRATE, name="PyStreamer")
+                                     bitrate=bitrate, name="PyStreamer")
             try:
                 self.source.connect()
             except UvoxError as e:
@@ -321,11 +338,11 @@ class AudioStreamerApp(ctk.CTk):
                 self.after(0, self.reset_btn)
                 return
 
-            self.after(0, self.update_status, f"En Vivo (MP3 @ {BITRATE} kbps)", "green")
+            self.after(0, self.update_status, f"En Vivo (MP3 @ {bitrate} kbps)", "green")
             self.after(0, self.set_btn, "Detener Broadcast")
             # Restaurar el encoder (para evitar el error "not currently encoding" tras un stop)
             self.encoder = lameenc.Encoder()
-            self.encoder.set_bit_rate(BITRATE)
+            self.encoder.set_bit_rate(bitrate)
             self.encoder.set_in_sample_rate(SAMPLE_RATE)
             self.encoder.set_channels(2)
             self.encoder.set_quality(2)
