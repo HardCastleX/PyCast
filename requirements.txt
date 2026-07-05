@@ -1,0 +1,4 @@
+customtkinter
+soundcard
+numpy
+lameenc
