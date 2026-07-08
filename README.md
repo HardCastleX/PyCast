@@ -11,8 +11,8 @@ Los encoders clásicos que usan el protocolo SHOUTcast v1 (contraseña por el pu
 ## Características
 
 - Protocolo SHOUTcast 2 nativo (Ultravox 2.1) con selección de Stream ID
-- Captura del audio del sistema (loopback) o micrófono, vía WASAPI
-- MP3 a 128 / 192 / 256 / 320 kbps (48 kHz), seleccionable desde la interfaz
+- Captura del audio del sistema (loopback) o micrófono, vía WASAPI *event-driven* (callbacks nativos, sin micro-cortes bajo carga)
+- MP3 a 128 / 192 / 256 / 320 kbps (a la frecuencia nativa del dispositivo), seleccionable desde la interfaz
 - VU meter estéreo en tiempo real
 - Presets de servidores (se guardan en `presets.json`, local y fuera del repositorio)
 - Cronómetro al aire y contador de datos enviados
@@ -29,9 +29,18 @@ Los encoders clásicos que usan el protocolo SHOUTcast v1 (contraseña por el pu
 py main.py
 ```
 
-1. Elige el dispositivo de audio (el "Loopback" de tus altavoces transmite lo que suena en tu PC).
+1. Elige el dispositivo de audio (ver abajo).
 2. Rellena host, puerto base del servidor, Stream ID, usuario DJ y contraseña.
 3. Selecciona el bitrate y pulsa **Iniciar Broadcast**.
+
+### ¿Qué dispositivo elegir? `[Loopback]` vs sin loopback
+
+El selector muestra dos tipos de dispositivos:
+
+- **Con `[Loopback]`** — es una copia digital directa de lo que suena por esa salida (altavoces o audífonos). Es la opción normal para transmitir lo que estás escuchando en tu PC: elige el `[Loopback]` del dispositivo por donde realmente escuchas el audio. Equivale al "capturar audio del sistema" de otros encoders.
+- **Sin `[Loopback]`** — son dispositivos de entrada reales: micrófonos, "Mezcla estéreo" (el loopback analógico antiguo de Realtek, con más latencia y peor calidad) o "CABLE Output" (la salida de un cable virtual VB-Audio, útil solo si enrutas el audio a través de ese cable).
+
+En resumen: para transmitir la música de tu PC usa el `[Loopback]` de tu salida predeterminada; usa una entrada sin loopback solo si vas a transmitir un micrófono o un cable virtual.
 
 La URL para los oyentes es `http://HOST:PUERTO/stream/STREAMID/`.
 

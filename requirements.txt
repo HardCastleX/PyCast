@@ -1,4 +1,4 @@
 customtkinter
-soundcard
+PyAudioWPatch
 numpy
 lameenc

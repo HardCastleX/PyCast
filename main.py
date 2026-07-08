@@ -1,5 +1,5 @@
 import customtkinter as ctk
-import soundcard as sc
+import pyaudiowpatch as pyaudio
 import numpy as np
 import lameenc
 import socket
@@ -10,6 +10,8 @@ import time
 import json
 import os
 import queue
+import ctypes
+import traceback
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -34,6 +36,9 @@ class AudioStreamerApp(ctk.CTk):
         self.live_start = None
         self.bytes_sent = 0
         
+        self.pa = pyaudio.PyAudio()
+        self.capture_rate = SAMPLE_RATE
+        self.capture_channels = 2
         self.audio_task_id = 0
         self.audio_thread = None
         self.audio_queue = queue.Queue(maxsize=100)
@@ -76,16 +81,19 @@ class AudioStreamerApp(ctk.CTk):
         self.title_label = ctk.CTkLabel(self.content_frame, text="Shoutcast v2 Streamer", font=ctk.CTkFont(size=24, weight="bold"))
         self.title_label.pack(pady=(20, 15))
 
-        # Audio Input Device
-        self.mic_dict = {str(m): m for m in sc.all_microphones(include_loopback=True)}
+        # Audio Input Device (WASAPI: microfonos y loopbacks de salida)
+        wasapi_index = self.pa.get_host_api_info_by_type(pyaudio.paWASAPI)["index"]
+        self.mic_dict = {}
+        for dev in self.pa.get_device_info_generator():
+            if dev["hostApi"] == wasapi_index and dev["maxInputChannels"] > 0:
+                self.mic_dict[dev["name"]] = dev
         device_list = list(self.mic_dict.keys())
 
         default_val = device_list[0] if device_list else ""
-        speaker = sc.default_speaker()
-        for d_name in device_list:
-            if str(speaker.id) in d_name or speaker.name in d_name:
-                default_val = d_name
-                break
+        try:
+            default_val = self.pa.get_default_wasapi_loopback()["name"]
+        except Exception:
+            pass
 
         self.audio_device_var = ctk.StringVar(value=default_val)
         self.audio_device_menu = ctk.CTkOptionMenu(self.content_frame, values=device_list, variable=self.audio_device_var, command=self.change_audio_device)
@@ -165,35 +173,64 @@ class AudioStreamerApp(ctk.CTk):
             self.update_status("Conexión perdida", "red")
 
     def audio_capture_task(self, device_name, task_id):
-        selected_mic = self.mic_dict.get(device_name)
-        if not selected_mic:
+        dev = self.mic_dict.get(device_name)
+        if not dev:
             return
-            
+
+        # WASAPI requiere COM inicializado en este hilo (si no, error -9999)
         try:
-            with selected_mic.recorder(samplerate=SAMPLE_RATE, channels=2) as mic:
-                while self.audio_task_id == task_id:
-                    try:
-                        data = mic.record(numframes=512)
-                    except:
-                        break
-                        
-                    if len(data) > 0:
-                        peak_l = min(1.0, np.max(np.abs(data[:, 0])) * 1.5)
-                        peak_r = min(1.0, np.max(np.abs(data[:, 1])) * 1.5) if data.shape[1] > 1 else peak_l
-                        
-                        if self.audio_task_id != task_id:
-                            break
-                            
-                        self.after(0, self.update_vu, peak_l, peak_r)
-                    
-                        if self.is_connected:
-                            pcm_data = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)
-                            try:
-                                self.audio_queue.put_nowait(pcm_data)
-                            except queue.Full:
-                                pass
+            ctypes.windll.ole32.CoInitializeEx(None, 0)  # MTA
         except Exception:
             pass
+
+        rate = int(dev["defaultSampleRate"])
+        channels = min(2, int(dev["maxInputChannels"]))
+        self.capture_rate = rate
+        self.capture_channels = channels
+        state = {"last_vu": 0.0}
+
+        # Captura event-driven: WASAPI entrega los buffers via callback nativo
+        # (como Rocket Broadcaster), sin bucle de polling en Python.
+        def callback(in_data, frame_count, time_info, status):
+            if self.audio_task_id != task_id:
+                return (None, pyaudio.paComplete)
+
+            try:
+                data = np.frombuffer(in_data, dtype=np.int16).reshape(-1, channels)
+
+                now = time.time()
+                if now - state["last_vu"] >= 0.05:
+                    state["last_vu"] = now
+                    peak_l = min(1.0, np.max(np.abs(data[:, 0])) / 32767.0 * 1.5)
+                    peak_r = min(1.0, np.max(np.abs(data[:, 1])) / 32767.0 * 1.5) if channels > 1 else peak_l
+                    self.after(0, self.update_vu, peak_l, peak_r)
+
+                if self.is_connected:
+                    pcm_data = data if channels == 2 else np.repeat(data, 2, axis=1)
+                    try:
+                        self.audio_queue.put_nowait(pcm_data)
+                    except queue.Full:
+                        pass
+            except Exception:
+                traceback.print_exc()
+            return (None, pyaudio.paContinue)
+
+        try:
+            stream = self.pa.open(format=pyaudio.paInt16, channels=channels,
+                                  rate=rate, input=True,
+                                  input_device_index=dev["index"],
+                                  frames_per_buffer=2048,
+                                  stream_callback=callback)
+            try:
+                while self.audio_task_id == task_id and stream.is_active():
+                    time.sleep(0.2)
+            finally:
+                stream.stop_stream()
+                stream.close()
+        except Exception as e:
+            traceback.print_exc()
+            if self.audio_task_id == task_id:
+                self.after(0, self.update_status, f"Error de captura: {e}", "red")
         finally:
             if self.audio_task_id == task_id:
                 self.after(0, self.update_vu, 0, 0)
@@ -343,7 +380,7 @@ class AudioStreamerApp(ctk.CTk):
             # Restaurar el encoder (para evitar el error "not currently encoding" tras un stop)
             self.encoder = lameenc.Encoder()
             self.encoder.set_bit_rate(bitrate)
-            self.encoder.set_in_sample_rate(SAMPLE_RATE)
+            self.encoder.set_in_sample_rate(self.capture_rate)
             self.encoder.set_channels(2)
             self.encoder.set_quality(2)
             
@@ -356,22 +393,26 @@ class AudioStreamerApp(ctk.CTk):
                 try: self.audio_queue.get_nowait()
                 except: pass
 
-            # 0.1s de silencio
-            silent_pcm = np.zeros((SAMPLE_RATE // 10, 2), dtype=np.int16)
+            # 0.5s de silencio (solo si la captura se detiene por completo)
+            silent_pcm = np.zeros((self.capture_rate // 2, 2), dtype=np.int16)
 
             while not self.should_stop and self.is_connected:
                 try:
-                    pcm_data = self.audio_queue.get(timeout=0.1)
+                    pcm_data = self.audio_queue.get(timeout=0.5)
                 except queue.Empty:
                     pcm_data = silent_pcm
                     
+                if self.should_stop:
+                    break
                 mp3_data = self.encoder.encode(pcm_data.tobytes())
                 if mp3_data:
                     try:
                         self.source.send_audio(bytes(mp3_data))
                         self.bytes_sent += len(mp3_data)
-                    except (socket.error, UvoxError):
-                        self.after(0, self.handle_disconnect)
+                    except (socket.error, UvoxError, AttributeError):
+                        # AttributeError: el socket ya fue cerrado por stop_stream
+                        if not self.should_stop:
+                            self.after(0, self.handle_disconnect)
                         break
 
             # Flush final data
